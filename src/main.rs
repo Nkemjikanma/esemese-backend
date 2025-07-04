@@ -2,20 +2,27 @@ use axum::debug_handler;
 use dotenv::dotenv;
 // use postgres::Error as PostgresError; // Errors
 // use postgres::{Client, NoTls}; // for none secure connection
-use reqwest::Client;
+use axum::{
+    Json, Router, extract,
+    http::{
+        HeaderValue, StatusCode,
+        header::{AUTHORIZATION, CONTENT_TYPE},
+    },
+    response::IntoResponse,
+    routing::{get, post},
+};
+
+use http::header; // Use http header
+use http::method;
+use reqwest::{Client, Method};
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::env; // handle env var
 use std::io::{Read, Write}; // to read and write from a tcp stream
 use std::net::{TcpListener, TcpStream};
 use std::os::macos;
 use tokio::time::error;
-
-use axum::{
-    Json, Router, extract,
-    http::StatusCode,
-    routing::{get, post},
-};
-use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use tower_http::cors::{Any, CorsLayer}; // Use http Method // Use http Method
 
 #[derive(Debug, Serialize, Deserialize)]
 struct PinataFile {
@@ -93,9 +100,23 @@ async fn main() {
     // initialize tracking
     tracing_subscriber::fmt::init();
 
+    // .allow_origin(["http://localhost:5173".parse().unwrap(), "https://your-production-domain.com".parse().unwrap()])
+
+    let cors_layer = CorsLayer::new()
+        .allow_methods(Any)
+        .allow_origin("http://localhost:5173".parse::<HeaderValue>().unwrap())
+        // .allow_credentials(true)
+        .allow_headers([
+            header::AUTHORIZATION,
+            header::CONTENT_TYPE,
+            header::ACCEPT,
+            header::ORIGIN,
+        ]);
+
     let app = Router::new()
         .route("/groups", get(get_pinata_groups))
-        .route("/favourites", get(get_favourites));
+        .route("/favourites", get(get_favourites))
+        .layer(cors_layer);
     // .route("/groups/:group_id/files", get(get_group_files));
     // .route("/gallery:collectionId", get(getCollection));
     // .route("/gallery", post(creat_gallery));

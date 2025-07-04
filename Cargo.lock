@@ -287,11 +287,13 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "dotenv",
+ "http",
  "postgres",
  "reqwest",
  "serde",
  "serde_derive",
  "tokio",
+ "tower-http",
  "tracing-subscriber",
 ]
 
