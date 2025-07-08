@@ -1,9 +1,9 @@
-use axum::debug_handler;
 use dotenv::dotenv;
 // use postgres::Error as PostgresError; // Errors
 // use postgres::{Client, NoTls}; // for none secure connection
 use axum::{
-    Json, Router, extract,
+    Json, Router, debug_handler,
+    extract::Query,
     http::{
         HeaderValue, StatusCode,
         header::{AUTHORIZATION, CONTENT_TYPE},
@@ -14,7 +14,7 @@ use axum::{
 
 use http::header; // Use http header
 use http::method;
-use reqwest::{Client, Method};
+use reqwest::{Client, Method, Url};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::env; // handle env var
@@ -23,6 +23,7 @@ use std::net::{TcpListener, TcpStream};
 use std::os::macos;
 use tokio::time::error;
 use tower_http::cors::{Any, CorsLayer}; // Use http Method // Use http Method
+// use urlencoding::encode;
 
 #[derive(Debug, Serialize, Deserialize)]
 struct PinataFile {
@@ -116,6 +117,7 @@ async fn main() {
     let app = Router::new()
         .route("/groups", get(get_pinata_groups))
         .route("/favourites", get(get_favourites))
+        .route("/files-category", get(get_files_by_category))
         .layer(cors_layer);
     // .route("/groups/:group_id/files", get(get_group_files));
     // .route("/gallery:collectionId", get(getCollection));
@@ -218,16 +220,16 @@ async fn get_favourites() -> Result<Json<FavouritesResponse>, (StatusCode, Strin
 
     match fetch_images_from_group(&favorites_group_id).await {
         Ok(files) => {
-            // Filter for images only
-            let images: Vec<PinataFile> = files
-                .into_iter()
-                .filter(|file| file.mime_type.starts_with("image/"))
-                .collect();
+            // // Filter for images only
+            // let images: Vec<PinataFile> = files
+            //     .into_iter()
+            //     .filter(|file| file.mime_type.starts_with("image/"))
+            //     .collect();
 
             Ok(Json(FavouritesResponse {
                 success: true,
                 group_id: favorites_group_id,
-                images,
+                images: files,
                 message: None,
             }))
         }
@@ -301,3 +303,144 @@ async fn fetch_images_from_group(
     println!("Total files collected: {}", all_files.len());
     Ok(all_files)
 }
+///////////////// get_files ///////
+#[derive(Debug, Deserialize)]
+struct CategoryParams {
+    categories: Option<String>,
+    limit: Option<usize>,
+}
+#[derive(Serialize)]
+struct CategoryResponse {
+    success: bool,
+    images: Vec<PinataFile>,
+    message: Option<String>,
+}
+async fn get_files_by_category(
+    Query(params): Query<CategoryParams>,
+) -> Result<Json<CategoryResponse>, (StatusCode, String)> {
+    let categories = match &params.categories {
+        Some(cats) => cats
+            .split(",")
+            .map(|s| s.trim().to_string())
+            .collect::<Vec<_>>(),
+        None => Vec::new(),
+    };
+
+    match fetch_files_from_pinata(categories).await {
+        Ok(mut files) => {
+            // Filter for images only
+            // let images: Vec<PinataFile> = files
+            //     .into_iter()
+            //     .filter(|file| file.mime_type.starts_with("image/"))
+            //     .collect();
+
+            // // Apply limit if specified
+            if let Some(limit) = params.limit {
+                files = files.into_iter().take(limit).collect();
+            }
+
+            Ok(Json(CategoryResponse {
+                success: true,
+                images: files,
+                message: None,
+            }))
+        }
+        Err(e) => {
+            eprintln!("Error fetching files by categories: {e}");
+            Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Failed to fetch by categories: {e}"),
+            ))
+        }
+    }
+}
+
+async fn fetch_files_from_pinata(
+    categories: Vec<String>,
+) -> Result<Vec<PinataFile>, Box<dyn std::error::Error>> {
+    dotenv().ok();
+    let api_key = env::var("PINATA_JWT").expect("PINATA JWT Not Found");
+    let gatewat_key = env::var("PINATA_GATEWAY_KEY").expect("Gateway Not Found");
+
+    let client = Client::new();
+    let mut all_files = Vec::new();
+    let mut page_token: Option<String> = None;
+
+    loop {
+        let mut url = Url::parse("https://api.pinata.cloud/v3/files/public")?;
+
+        if !categories.is_empty() {
+            let metadata_json = if categories.len() == 1 {
+                format!(
+                    r#"{{"category":{{"value":"{}","op":"eq"}}}}"#,
+                    categories[0]
+                )
+            } else {
+                let categories_json = categories
+                    .iter()
+                    .map(|c| format!(r#""{}""#, c))
+                    .collect::<Vec<_>>()
+                    .join(",");
+
+                format!(
+                    r#"{{"category":{{"value":[{}],"op":"in"}}}}"#,
+                    categories_json
+                )
+            };
+
+            // // url encode the json
+            // let encoded_metadata =
+            //
+            url.query_pairs_mut()
+                .append_pair("metadata[keyvalues]", &metadata_json);
+
+            println!("{url}");
+        }
+
+        // add page token
+        if let Some(token) = &page_token {
+            url.query_pairs_mut().append_pair("pageToken", token);
+        }
+
+        println!("{url}");
+
+        let response = client
+            .get(url)
+            .header("Authorization", format!("Bearer {api_key}"))
+            .send()
+            .await?;
+
+        let status = response.status();
+
+        if !status.is_success() {
+            let error_body = response.text().await?;
+            println!("API request failed with status: {status}");
+            println!("Response body: {error_body}");
+            return Err(format!(
+                "API request failed with status: {}. Body: {}",
+                status, error_body
+            )
+            .into());
+        }
+
+        // parse response
+        let data: PinataFilesResponse = response.json().await?;
+        println!("Found {} files", data.data.files.len());
+
+        all_files.extend(data.data.files);
+
+        match data.data.next_page_token {
+            Some(token) => page_token = Some(token),
+            None => break,
+        }
+    }
+
+    println!("Total files collected: {}", all_files.len());
+    Ok(all_files)
+}
+
+// const gateway = "salmon-realistic-muskox-762.mypinata.cloud";
+
+// export const ipfsURL = (cid: string, filename: string): string => {
+//   return `https://${gateway}/ipfs/${cid}?pinataGatewayToken=${import.meta.env.VITE_PINATA_GATEWAY_KEY}`;
+// };
