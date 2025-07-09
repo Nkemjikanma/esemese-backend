@@ -2,7 +2,7 @@ use dotenv::dotenv;
 // use postgres::Error as PostgresError; // Errors
 // use postgres::{Client, NoTls}; // for none secure connection
 use axum::{
-    Json, Router, debug_handler,
+    Json, Router, debug_handler, extract,
     extract::Query,
     http::{
         HeaderValue, StatusCode,
@@ -12,8 +12,8 @@ use axum::{
     routing::{get, post},
 };
 
-use http::header; // Use http header
 use http::method;
+use http::{Response, header}; // Use http header
 use reqwest::{Client, Method, Url};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -23,7 +23,66 @@ use std::net::{TcpListener, TcpStream};
 use std::os::macos;
 use tokio::time::error;
 use tower_http::cors::{Any, CorsLayer}; // Use http Method // Use http Method
-// use urlencoding::encode;
+
+use thiserror::Error;
+
+#[derive(Debug, Error)]
+enum ApiError {
+    #[error("Environment variable error: {0}")]
+    Env(#[from] std::env::VarError),
+
+    #[error("HTTP request error: {0}")]
+    Request(#[from] reqwest::Error),
+
+    #[error("API error: {0}")]
+    Api(String),
+
+    #[error("Url parsing error: {0}")]
+    UrlParse(#[from] url::ParseError),
+
+    #[error("JSON parsing error: {0}")]
+    Json(#[from] serde_json::Error),
+}
+
+// struct ErrorStruct {
+//     success: bool,
+//     error: String,
+//     message: String,
+// }
+
+// function to conver error into axum responses
+impl IntoResponse for ApiError {
+    fn into_response(self) -> axum::response::Response {
+        eprintln!("API Error: {self}"); // Log all errors
+        let (status, error_message) = match self {
+            Self::Env(_) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Server configuration error",
+            ),
+            Self::Request(_) => (
+                StatusCode::BAD_GATEWAY,
+                "Error communicating with external service",
+            ),
+            Self::UrlParse(_) => (StatusCode::INTERNAL_SERVER_ERROR, "URL parsing error"),
+            Self::Api(_) => (StatusCode::BAD_GATEWAY, "External API error"),
+            Self::Json(_) => (StatusCode::INTERNAL_SERVER_ERROR, "JSON parsing error"),
+        };
+
+        let body = Json(serde_json::json!({
+            "success": false,
+            "error": error_message,
+            "message": self.to_string(),
+        }));
+
+        (status, body).into_response()
+    }
+}
+
+impl From<String> for ApiError {
+    fn from(message: String) -> Self {
+        ApiError::Api(message)
+    }
+}
 
 #[derive(Debug, Serialize, Deserialize)]
 struct PinataFile {
@@ -116,6 +175,7 @@ async fn main() {
 
     let app = Router::new()
         .route("/groups", get(get_pinata_groups))
+        .route("/groups-with-thumbnails", get(get_groups_with_thumbnails))
         .route("/favourites", get(get_favourites))
         .route("/files-category", get(get_files_by_category))
         .layer(cors_layer);
@@ -132,7 +192,7 @@ async fn main() {
 }
 
 // #[debug_handler]
-async fn get_pinata_groups() -> Result<Json<ApiResponse>, (StatusCode, String)> {
+async fn get_pinata_groups() -> Result<Json<ApiResponse>, ApiError> {
     match fetch_groups_from_pinata().await {
         Ok(groups) => {
             println!("Fetched {} groups", groups.len());
@@ -149,17 +209,17 @@ async fn get_pinata_groups() -> Result<Json<ApiResponse>, (StatusCode, String)> 
             eprintln!("Error fetching groups: {e}");
 
             // Return error response
-            Err((
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Failed to fetch groups: {e}"),
-            ))
+            Err(e)
         }
     }
 }
 
-async fn fetch_groups_from_pinata() -> Result<Vec<PinataGroup>, Box<dyn std::error::Error>> {
+async fn fetch_groups_from_pinata() -> Result<Vec<PinataGroup>, ApiError> {
     dotenv().ok();
-    let api_key = env::var("PINATA_JWT").expect("PINATA JWT Not Found");
+    let api_key = env::var("PINATA_JWT").map_err(|e| {
+        eprintln!("Failed to get PINATA_JWT: {e}");
+        ApiError::Env(e)
+    })?;
 
     let client = Client::new();
     let mut all_groups = Vec::new();
@@ -215,39 +275,32 @@ async fn fetch_groups_from_pinata() -> Result<Vec<PinataGroup>, Box<dyn std::err
     Ok(all_groups)
 }
 
-async fn get_favourites() -> Result<Json<FavouritesResponse>, (StatusCode, String)> {
+async fn get_favourites() -> Result<Json<FavouritesResponse>, ApiError> {
     let favorites_group_id = "876d949f-6532-44af-924c-f164e5ac6b1b".to_string();
 
-    match fetch_images_from_group(&favorites_group_id).await {
-        Ok(files) => {
-            // // Filter for images only
-            // let images: Vec<PinataFile> = files
-            //     .into_iter()
-            //     .filter(|file| file.mime_type.starts_with("image/"))
-            //     .collect();
-
-            Ok(Json(FavouritesResponse {
-                success: true,
-                group_id: favorites_group_id,
-                images: files,
-                message: None,
-            }))
-        }
+    match fetch_images_from_group(&favorites_group_id, None).await {
+        Ok(files) => Ok(Json(FavouritesResponse {
+            success: true,
+            group_id: favorites_group_id,
+            images: files,
+            message: None,
+        })),
         Err(e) => {
             eprintln!("Error fetching carousel images: {e}");
-            Err((
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Failed to fetch carousel images: {e}"),
-            ))
+            Err(e)
         }
     }
 }
 
 async fn fetch_images_from_group(
     group_id: &str,
-) -> Result<Vec<PinataFile>, Box<dyn std::error::Error>> {
+    limit: Option<usize>,
+) -> Result<Vec<PinataFile>, ApiError> {
     dotenv().ok();
-    let api_key = env::var("PINATA_JWT").expect("PINATA JWT Not Found");
+    let api_key = env::var("PINATA_JWT").map_err(|e| {
+        eprintln!("Failed to get PINATA_JWT: {e}");
+        ApiError::Env(e)
+    })?;
 
     let client = Client::new();
     let mut all_files = Vec::new();
@@ -293,6 +346,13 @@ async fn fetch_images_from_group(
         // add files to our collection
         all_files.extend(data.data.files);
 
+        if let Some(limit_val) = limit {
+            if all_files.len() >= limit_val {
+                all_files.truncate(limit_val);
+                break;
+            }
+        }
+
         // check for mmore pages
         match data.data.next_page_token {
             Some(token) => page_token = Some(token),
@@ -317,7 +377,7 @@ struct CategoryResponse {
 }
 async fn get_files_by_category(
     Query(params): Query<CategoryParams>,
-) -> Result<Json<CategoryResponse>, (StatusCode, String)> {
+) -> Result<Json<CategoryResponse>, ApiError> {
     let categories = match &params.categories {
         Some(cats) => cats
             .split(",")
@@ -347,20 +407,22 @@ async fn get_files_by_category(
         }
         Err(e) => {
             eprintln!("Error fetching files by categories: {e}");
-            Err((
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Failed to fetch by categories: {e}"),
-            ))
+            Err(e)
         }
     }
 }
 
-async fn fetch_files_from_pinata(
-    categories: Vec<String>,
-) -> Result<Vec<PinataFile>, Box<dyn std::error::Error>> {
+async fn fetch_files_from_pinata(categories: Vec<String>) -> Result<Vec<PinataFile>, ApiError> {
     dotenv().ok();
-    let api_key = env::var("PINATA_JWT").expect("PINATA JWT Not Found");
-    let gatewat_key = env::var("PINATA_GATEWAY_KEY").expect("Gateway Not Found");
+    let api_key = env::var("PINATA_JWT").map_err(|e| {
+        eprintln!("Failed to get PINATA_JWT: {e}");
+        ApiError::Env(e)
+    })?;
+
+    let gatewat_key = env::var("PINATA_GATEWAY_KEY").map_err(|e| {
+        eprintln!("Failed to get the gatewar key: {e}");
+        ApiError::Env(e)
+    });
 
     let client = Client::new();
     let mut all_files = Vec::new();
@@ -439,8 +501,60 @@ async fn fetch_files_from_pinata(
     Ok(all_files)
 }
 
-// const gateway = "salmon-realistic-muskox-762.mypinata.cloud";
+#[derive(Debug, Serialize, Deserialize)]
+struct GroupWithThumbnail {
+    id: String,
+    name: String,
+    is_public: Option<bool>,
+    created_at: String,
+    thumbnail_image: Option<PinataFile>,
+    photo_count: usize,
+}
 
-// export const ipfsURL = (cid: string, filename: string): string => {
-//   return `https://${gateway}/ipfs/${cid}?pinataGatewayToken=${import.meta.env.VITE_PINATA_GATEWAY_KEY}`;
-// };
+#[derive(Debug, Serialize, Deserialize)]
+struct GroupsWithThumbnailResponse {
+    success: bool,
+    collections: Vec<GroupWithThumbnail>,
+    message: Option<String>,
+}
+
+#[axum::debug_handler]
+async fn get_groups_with_thumbnails() -> Result<Json<GroupsWithThumbnailResponse>, ApiError> {
+    match fetch_groups_from_pinata().await {
+        Ok(groups) => {
+            let mut collections = Vec::new();
+
+            for group in groups {
+                let result = fetch_images_from_group(&group.id, Some(1)).await;
+
+                let (thumbnail, count) = match result {
+                    Ok(files) => {
+                        let count = files.len();
+                        let thumbnail = files.into_iter().next();
+                        (thumbnail, count)
+                    }
+                    Err(_) => (None, 0),
+                };
+
+                collections.push(GroupWithThumbnail {
+                    id: group.id,
+                    name: group.name,
+                    is_public: group.is_public,
+                    created_at: group.created_at,
+                    thumbnail_image: thumbnail,
+                    photo_count: count,
+                });
+            }
+
+            Ok(Json(GroupsWithThumbnailResponse {
+                success: true,
+                collections,
+                message: None,
+            }))
+        }
+        Err(e) => {
+            eprintln!("Error fetching groups with thumbnails: {e}");
+            Err(e)
+        }
+    }
+}

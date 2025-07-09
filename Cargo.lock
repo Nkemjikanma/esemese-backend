@@ -292,9 +292,12 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_derive",
+ "serde_json",
+ "thiserror",
  "tokio",
  "tower-http",
  "tracing-subscriber",
+ "url",
 ]
 
 [[package]]
