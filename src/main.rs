@@ -1,6 +1,3 @@
-use dotenv::dotenv;
-// use postgres::Error as PostgresError; // Errors
-// use postgres::{Client, NoTls}; // for none secure connection
 use axum::{
     Json, Router, debug_handler, extract,
     extract::Query,
@@ -11,17 +8,13 @@ use axum::{
     response::IntoResponse,
     routing::{get, post},
 };
+use dotenv::dotenv;
 
-use http::method;
 use http::{Response, header}; // Use http header
-use reqwest::{Client, Method, Url};
+use reqwest::{Client, Url};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::env; // handle env var
-use std::io::{Read, Write}; // to read and write from a tcp stream
-use std::net::{TcpListener, TcpStream};
-use std::os::macos;
-use tokio::time::error;
 use tower_http::cors::{Any, CorsLayer}; // Use http Method // Use http Method
 
 use thiserror::Error;
@@ -43,12 +36,6 @@ enum ApiError {
     #[error("JSON parsing error: {0}")]
     Json(#[from] serde_json::Error),
 }
-
-// struct ErrorStruct {
-//     success: bool,
-//     error: String,
-//     message: String,
-// }
 
 // function to conver error into axum responses
 impl IntoResponse for ApiError {
@@ -134,27 +121,6 @@ struct ApiResponse {
     message: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
-struct GroupNameSearch {
-    group_id: Option<String>, // Optional to allow default "favorites" group
-    limit: Option<usize>,     // Optional limit for number of images
-}
-
-#[derive(Serialize)]
-struct FavouritesResponse {
-    success: bool,
-    group_id: String,
-    images: Vec<PinataFile>,
-    message: Option<String>,
-}
-// // Database URL
-// const DB_URL: &str = !env("DATABASE_URL");
-
-// // Response Constants
-// const OK_RESPONSE: &str = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n";
-// const NOT_FOUND: &str = "HTTP/1.1 404 NOT FOUND\r\n\r\n";
-// const INTERNAL_SERVER_ERROR: &str = "HTTP/1.1 500 INTERNAL SERVER ERROR\r\n\r\n";
-
 #[tokio::main]
 async fn main() {
     // initialize tracking
@@ -176,12 +142,10 @@ async fn main() {
     let app = Router::new()
         .route("/groups", get(get_pinata_groups))
         .route("/groups-with-thumbnails", get(get_groups_with_thumbnails))
+        .route("/group-images", get(get_group_images))
         .route("/favourites", get(get_favourites))
         .route("/files-category", get(get_files_by_category))
         .layer(cors_layer);
-    // .route("/groups/:group_id/files", get(get_group_files));
-    // .route("/gallery:collectionId", get(getCollection));
-    // .route("/gallery", post(creat_gallery));
 
     // Define Ip and Port
     let address: &'static str = "0.0.0.0:3000";
@@ -275,13 +239,31 @@ async fn fetch_groups_from_pinata() -> Result<Vec<PinataGroup>, ApiError> {
     Ok(all_groups)
 }
 
-async fn get_favourites() -> Result<Json<FavouritesResponse>, ApiError> {
-    let favorites_group_id = "876d949f-6532-44af-924c-f164e5ac6b1b".to_string();
+#[derive(Debug, Deserialize)]
+struct GroupImagesParams {
+    group_id: Option<String>,
+    limit: Option<usize>,
+}
 
-    match fetch_images_from_group(&favorites_group_id, None).await {
-        Ok(files) => Ok(Json(FavouritesResponse {
+#[derive(Serialize)]
+struct GroupImagesResponse {
+    success: bool,
+    group_id: String,
+    images: Vec<PinataFile>,
+    message: Option<String>,
+}
+
+async fn get_group_images(
+    Query(params): Query<GroupImagesParams>,
+) -> Result<Json<GroupImagesResponse>, ApiError> {
+    let group_id = params
+        .group_id
+        .unwrap_or_else(|| "876d949f-6532-44af-924c-f164e5ac6b1b".to_string());
+
+    match fetch_images_from_group(&group_id, params.limit).await {
+        Ok(files) => Ok(Json(GroupImagesResponse {
             success: true,
-            group_id: favorites_group_id,
+            group_id,
             images: files,
             message: None,
         })),
@@ -290,6 +272,13 @@ async fn get_favourites() -> Result<Json<FavouritesResponse>, ApiError> {
             Err(e)
         }
     }
+}
+
+async fn get_favourites(
+    query: Query<GroupImagesParams>,
+) -> Result<Json<GroupImagesResponse>, ApiError> {
+    // Simply delegate to get_group_images
+    get_group_images(query).await
 }
 
 async fn fetch_images_from_group(
