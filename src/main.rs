@@ -583,6 +583,7 @@ struct PhotoMetadata {
 struct UploadResponse {
     success: bool,
     files: Vec<UploadedFileInfo>,
+    group_id: Option<String>,
     message: Option<String>,
 }
 
@@ -591,7 +592,7 @@ struct UploadedFileInfo {
     id: String,
     name: String,
     cid: String,
-    // Other fields returned from Pinata
+    group_id: Option<String>, // Other fields returned from Pinata
 }
 
 async fn upload_photo(mut multipart: Multipart) -> Result<Json<UploadResponse>, ApiError> {
@@ -668,8 +669,10 @@ async fn upload_photo(mut multipart: Multipart) -> Result<Json<UploadResponse>, 
             metadata_map.insert(fie_id, metadata);
         }
     }
+
     // upload each file to pinata
     let mut uploaded_files = Vec::new();
+    let mut created_group_id: Option<String> = None;
 
     for (file_id, file_data) in files {
         let metadata = metadata_map
@@ -689,12 +692,25 @@ async fn upload_photo(mut multipart: Multipart) -> Result<Json<UploadResponse>, 
         )
         .await?;
 
+        // if this is the first file and we created group, store the group ID
+        if create_new_group && created_group_id.is_none() {
+            created_group_id = pinata_result.group_id.clone();
+        }
+
         uploaded_files.push(pinata_result);
     }
+
+    //
+    let response_group_id = if create_new_group {
+        created_group_id
+    } else {
+        group_id
+    };
 
     Ok(Json(UploadResponse {
         success: true,
         files: uploaded_files,
+        group_id: response_group_id,
         message: None,
     }))
 }
@@ -725,8 +741,6 @@ async fn upload_to_pinata(
     group_id: &Option<String>,
     group_name: &Option<String>,
 ) -> Result<UploadedFileInfo, ApiError> {
-    // 'Content-Type': 'multipart/form-data'
-
     dotenv().ok();
     let api_key = env::var("PINATA_JWT").map_err(|e| {
         eprintln!("Failed to get PINATA_JWT: {e}");
@@ -743,6 +757,29 @@ async fn upload_to_pinata(
     let max_retries = 3;
     let mut last_error = None;
 
+    // group creation
+    let created_group_id = if create_new_group {
+        if let Some(name) = group_name {
+            // create the group and get_id
+            match create_pinata_group(&client, &api_key, name).await {
+                Ok(id) => {
+                    println!("Created new group with ID: {}", id);
+                    Some(id)
+                }
+                Err(e) => {
+                    println!("Failed to create group: {:?}", e);
+                    return Err(e);
+                }
+            }
+        } else {
+            return Err(ApiError::Api(
+                "Group name is needed for new group creations".to_string(),
+            ));
+        }
+    } else {
+        group_id.clone()
+    };
+
     // On each retry, recreate multipart form for Pinata inside a closure
     let create_form = || -> Result<reqwest::multipart::Form, ApiError> {
         let mut form = reqwest::multipart::Form::new()
@@ -756,7 +793,7 @@ async fn upload_to_pinata(
             )
             .text("name", metadata.title.clone());
 
-        if let Some(gid) = group_id {
+        if let Some(gid) = &created_group_id {
             form = form.text("group_id", gid.clone());
         }
 
@@ -857,7 +894,56 @@ async fn send_pinata_request(
         id: data.data.id,
         name: data.data.name,
         cid: data.data.cid,
+        group_id: data.data.group_id,
     };
 
     Ok(file_info)
+}
+
+#[derive(Debug, Deserialize)]
+struct GroupCreationResponse {
+    id: String,
+    user_id: String,
+    name: String,
+    #[serde(rename = "updatedAt")]
+    updated_at: String,
+    #[serde(rename = "createdAt")]
+    created_at: String,
+}
+
+async fn create_pinata_group(
+    client: &Client,
+    api_key: &str,
+    group_name: &str,
+) -> Result<String, ApiError> {
+    println!("Creating new Pinata group: {}", group_name);
+
+    // group creation payload
+    let group_payload = serde_json::json!({
+        "name": group_name,
+        "is_public": true
+    });
+
+    let response = client
+        .post("https://api.pinata.cloud/groups")
+        .header("Authorization", format!("Bearer {}", api_key))
+        .json(&group_payload)
+        .send()
+        .await
+        .map_err(|e| ApiError::Request(e))?;
+
+    let status = response.status();
+
+    if !status.is_success() {
+        let error_body = response.text().await?;
+        return Err(ApiError::Api(format!(
+            "Pinata API error ({}): {}",
+            status, error_body
+        )));
+    }
+
+    let data: GroupCreationResponse = response.json().await.map_err(|e| ApiError::Request(e))?;
+    println!("Group creation response: {:?}", data);
+
+    Ok(data.id)
 }
