@@ -1,9 +1,6 @@
-use axum::{Json, extract::Query};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 
 use super::{PinataFile, PinataGroup};
-use crate::ApiError;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct PinataFilesData {

@@ -1,18 +1,8 @@
 use thiserror::Error;
 
-use axum::{
-    Json, Router, debug_handler,
-    extract::{self, DefaultBodyLimit, Query, multipart::Multipart},
-    http::{
-        HeaderValue, StatusCode,
-        header::{AUTHORIZATION, CONTENT_TYPE},
-    },
-    response::IntoResponse,
-    routing::{get, post},
-};
+use axum::{Json, http::StatusCode, response::IntoResponse};
 use reqwest;
 use serde_json;
-use std::env;
 use url;
 
 #[derive(Debug, Error)]

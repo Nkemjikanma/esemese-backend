@@ -1,22 +1,9 @@
-use axum::{
-    Json, Router, debug_handler,
-    extract::{self, DefaultBodyLimit, Query, multipart::Multipart},
-    http::{
-        HeaderValue, StatusCode,
-        header::{AUTHORIZATION, CONTENT_TYPE},
-    },
-    response::IntoResponse,
-    routing::{get, post},
-};
+use axum::{Json, Router, routing::get};
 use dotenv::dotenv;
 
 use crate::errors::ApiError;
-use http::{Response, header}; // Use http header
-use reqwest::{Client, Request, Url};
-use serde::{Deserialize, Serialize};
+use reqwest::Client;
 use std::env; // handle env var
-use std::{collections::HashMap, time::Duration};
-use tower_http::cors::{Any, CorsLayer}; // Use http Method // Use http Method
 
 use crate::models::{
     favourites::{ApiResponse, PinataFilesResponse},

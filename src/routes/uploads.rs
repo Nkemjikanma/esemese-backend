@@ -1,9 +1,5 @@
-use axum::{
-    Json, Router,
-    extract::multipart::Multipart,
-    routing::{get, post},
-};
-use reqwest::{Client, Request, Url};
+use axum::{Json, Router, extract::multipart::Multipart, routing::post};
+use reqwest::Client;
 
 use dotenv::dotenv;
 use std::collections::HashMap;
@@ -13,10 +9,7 @@ use std::time::Duration;
 use crate::errors::ApiError;
 use crate::models::{
     groups::GroupCreationResponse,
-    uploads::{
-        GroupInfo, PhotoMetadata, PhotoUpload, PinataUploadData, PinataUploadResponse,
-        UploadResponse, UploadedFileInfo,
-    },
+    uploads::{PhotoMetadata, PinataUploadResponse, UploadResponse, UploadedFileInfo},
 };
 
 pub fn uploads_router() -> Router {

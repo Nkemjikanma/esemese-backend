@@ -1,27 +1,20 @@
 use axum::{
-    Json, Router, debug_handler,
-    extract::{self, DefaultBodyLimit, Query, multipart::Multipart},
+    Router,
+    extract::DefaultBodyLimit,
     http::{
-        HeaderValue, StatusCode,
+        HeaderValue,
         header::{AUTHORIZATION, CONTENT_TYPE},
     },
-    response::IntoResponse,
-    routing::{get, post},
 };
-use dotenv::dotenv;
 
-use http::{Response, header}; // Use http header
-use reqwest::{Client, Request, Url};
-use serde::{Deserialize, Serialize};
-use std::env; // handle env var
-use std::{collections::HashMap, time::Duration};
+use http::header; // Use http header
 use tower_http::cors::{Any, CorsLayer}; // Use http Method // Use http Method
 
 pub mod errors;
 pub mod models;
 pub mod routes;
 use crate::errors::ApiError;
-use crate::models::{favourites::PinataFilesResponse, pinata::PinataFile};
+use crate::models::pinata::PinataFile;
 use crate::routes::{
     categories::categories_router, favourites::favourites_router, groups::groups_router,
     uploads::uploads_router,
